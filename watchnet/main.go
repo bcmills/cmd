@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 )
@@ -26,6 +28,9 @@ type natPort struct {
 
 func main() {
 	maxSeen := 0
+
+	connsByRemote := map[string]map[string]bool{} // remote → local → true
+	totalConns := 0
 
 	for {
 		cmd := exec.Command("ss", "--process", "--oneline", "--no-header", "--resolve", "--tcp", "--udp", "state", "connected", "! ( dst = localhost || dst = metadata )")
@@ -41,6 +46,7 @@ func main() {
 		nonNats := 0
 		var nats []natPort
 
+		prevUnique := totalConns
 		br := bufio.NewReader(out)
 		for {
 			line, err := br.ReadSlice('\n')
@@ -56,6 +62,7 @@ func main() {
 				log.Fatalf("%v:\nunexpected short line: %q", cmd, line)
 			}
 			state := f[1]
+			localAddr := f[4]
 			remoteAddr := f[5]
 			var program []byte
 			if len(f) > 6 {
@@ -70,6 +77,16 @@ func main() {
 			if strings.HasSuffix(host, ".1e100.net") {
 				nonNats++
 				continue
+			}
+
+			locals := connsByRemote[string(remoteAddr)]
+			if locals == nil {
+				locals = make(map[string]bool)
+				connsByRemote[string(remoteAddr)] = locals
+			}
+			if !locals[string(localAddr)] {
+				locals[string(localAddr)] = true
+				totalConns++
 			}
 
 			nats = append(nats, natPort{
@@ -92,6 +109,16 @@ func main() {
 			}
 			fmt.Println()
 			maxSeen = len(nats)
+		}
+
+		if totalConns > prevUnique {
+			fmt.Printf("%s\nsaw %d connections with %d unique remote addrs", time.Now().Format(time.RFC3339), totalConns, len(connsByRemote))
+			remotes := maps.Keys(connsByRemote)
+			sort.Strings(remotes)
+			for _, r := range remotes {
+				fmt.Printf("%s\t%d\n", r, len(connsByRemote[r]))
+			}
+			fmt.Println()
 		}
 	}
 }
